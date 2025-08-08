@@ -4,10 +4,12 @@
   "version": "1.0",
   "description": "Checks for course availability on YorkU's registration site.",
   "permissions": [
-    "cookies"
+    "cookies",
+    "activeTab"
   ],
   "host_permissions": [
-    "*://*.yorku.ca/*"
+    "*://*.yorku.ca/*",
+    "*://yorku.ca/*"
   ],
   "background": {
     "service_worker": "background.js"
@@ -15,7 +17,8 @@
   "content_scripts": [
     {
       "matches": [
-        "*://*.yorku.ca/*"
+        "*://*.yorku.ca/*",
+        "*://yorku.ca/*"
       ],
       "js": [
         "content.js"
