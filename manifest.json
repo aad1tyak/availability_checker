@@ -3,10 +3,19 @@
   "name": "YorkU Course Availability Checker",
   "version": "1.0",
   "description": "Checks for course availability on YorkU's registration site.",
+  "permissions": [
+    "cookies"
+  ],
+  "host_permissions": [
+    "*://*.yorku.ca/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
   "content_scripts": [
     {
       "matches": [
-        "https://w2prod.sis.yorku.ca/*"
+        "*://*.yorku.ca/*"
       ],
       "js": [
         "content.js"
