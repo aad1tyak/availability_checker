@@ -1,43 +1,49 @@
-// background.js
-
 const SESSION_COOKIE_NAME = 'ppyauth';
-const TARGET_DOMAIN_WILDCARD = 'https://*.yorku.ca/';
+const TARGET_DOMAINS = [
+  'https://www.yorku.ca/',
+  'https://passportyork.yorku.ca/',
+  'https://my.yorku.ca/',
+  'https://w2prod.sis.yorku.ca/'
+];
 
-// Function to check for the session cookie
 async function isUserLoggedIn() {
   try {
     console.log('--- DEBUGGING COOKIES ---');
-    console.log(`Attempting to get all cookies for domain: ${TARGET_DOMAIN_WILDCARD}`);
-    
-    // Get ALL cookies for the broader YorkU domain
-    const allCookies = await chrome.cookies.getAll({ url: TARGET_DOMAIN_WILDCARD });
 
-    console.log('Found these cookies:', allCookies);
-    
-    // Now, find our specific session cookie in the list
-    const sessionCookie = allCookies.find(cookie => cookie.name === SESSION_COOKIE_NAME);
+    for (const domain of TARGET_DOMAINS) {
+      console.log(`\n🔍 Checking cookies for: ${domain}`);
 
-    if (sessionCookie) {
-      console.log('SUCCESS! Found the session cookie:', sessionCookie);
-      return true;
-    } else {
-      console.log('FAILURE. The session cookie was not found in the list.');
-      return false;
+      const cookies = await chrome.cookies.getAll({ url: domain });
+
+      console.log(`Found ${cookies.length} cookies for ${domain}`);
+      cookies.forEach((cookie, index) => {
+        console.log(`  ${index + 1}. ${cookie.name} = ${cookie.value.substring(0, 30)}...`);
+      });
+
+      const sessionCookie = cookies.find(c => c.name === SESSION_COOKIE_NAME);
+
+      if (sessionCookie) {
+        console.log(`✅ SUCCESS: Found ${SESSION_COOKIE_NAME} at ${domain}`);
+        console.log('Full cookie object:', sessionCookie);
+        return true;
+      }
     }
+
+    console.log('❌ FAILURE: No session cookie found in any tested domain.');
+    return false;
+
   } catch (error) {
-    console.error('Error in cookie check:', error);
+    console.error('💥 ERROR in cookie check:', error);
     return false;
   }
 }
 
-// Listen for a message from the content script
-chrome.runtime.onMessage.addListener(
-  function(request, sender, sendResponse) {
-    if (request.action === "checkLoginStatus") {
-      isUserLoggedIn().then(isLoggedIn => {
-        sendResponse({ status: isLoggedIn });
-      });
-      return true;
-    }
+// Listen for content script requests
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === "checkLoginStatus") {
+    isUserLoggedIn().then(isLoggedIn => {
+      sendResponse({ status: isLoggedIn });
+    });
+    return true;
   }
-);
+});
