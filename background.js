@@ -16,10 +16,14 @@ async function isUserLoggedIn() {
 
 // Listen for a message from the content script
 chrome.runtime.onMessage.addListener(
-  async function(request, sender, sendResponse) {
+  function(request, sender, sendResponse) {
     if (request.action === "checkLoginStatus") {
-      const isLoggedIn = await isUserLoggedIn();
-      sendResponse({ status: isLoggedIn });
+      isUserLoggedIn().then(isLoggedIn => {
+        sendResponse({ status: isLoggedIn });
+      });
+      // This is the crucial line:
+      // It tells the browser that you will send a response asynchronously.
+      return true;
     }
   }
 );
