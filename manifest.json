@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "YorkU Course Availability Checker",
-  "version": "1.0",
-  "description": "Checks for course availability on YorkU's registration site.",
+  "version": "1.1",
+  "description": "Monitors York University course section availability.",
   "permissions": [
+    "storage",   
     "cookies",
     "activeTab",
     "tabs"
@@ -12,6 +13,14 @@
     "*://*.yorku.ca/*",
     "*://yorku.ca/*"
   ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
   "background": {
     "service_worker": "background.js"
   },
