@@ -1,105 +1,79 @@
 // background.js
 
-const SESSION_COOKIE_NAME = 'pyauth'; // Fixed: was 'ppyauth'
-const TARGET_DOMAINS = [
-  'https://yorku.ca/',
-  'https://www.yorku.ca/',
-  'https://passportyork.yorku.ca/',
-  'https://my.yorku.ca/',
-  'https://w2prod.sis.yorku.ca/'
-];
+const SESSION_COOKIE_NAME = 'pyauth';
+const TARGET_DOMAIN_FOR_COOKIES = '.yorku.ca';
+let lastCapturedToken = null; // Stores the most recently found URL token
 
+// --- Cookie-based Login Check ---
 async function isUserLoggedIn() {
   try {
-    console.log('--- DEBUGGING COOKIES ---');
-
-    // First, try to get the specific session cookie directly
-    try {
-      const sessionCookie = await chrome.cookies.get({
-        url: 'https://www.yorku.ca/',
-        name: SESSION_COOKIE_NAME
-      });
-      
-      if (sessionCookie) {
-        console.log(`✅ SUCCESS: Found ${SESSION_COOKIE_NAME} directly`);
-        console.log('Cookie details:', sessionCookie);
-        return true;
-      }
-    } catch (error) {
-      console.log('Direct cookie check failed:', error);
-    }
-
-    // Fallback: Check all domains
-    for (const domain of TARGET_DOMAINS) {
-      console.log(`\n🔍 Checking cookies for: ${domain}`);
-
-      try {
-        const cookies = await chrome.cookies.getAll({ url: domain });
-
-        console.log(`Found ${cookies.length} cookies for ${domain}`);
-        cookies.forEach((cookie, index) => {
-          console.log(`  ${index + 1}. ${cookie.name} = ${cookie.value.substring(0, 30)}...`);
-          console.log(`     Domain: ${cookie.domain}, Secure: ${cookie.secure}, HttpOnly: ${cookie.httpOnly}`);
-        });
-
-        const sessionCookie = cookies.find(c => c.name === SESSION_COOKIE_NAME);
-
-        if (sessionCookie) {
-          console.log(`✅ SUCCESS: Found ${SESSION_COOKIE_NAME} at ${domain}`);
-          console.log('Full cookie object:', sessionCookie);
-          return true;
-        }
-      } catch (error) {
-        console.log(`Error checking ${domain}:`, error);
-      }
-    }
-
-    // Also check for the other cookie that might indicate login
-    console.log('\n🔍 Checking for alternative login indicators...');
-    
-    try {
-      const altCookie = await chrome.cookies.get({
-        url: 'https://passportyork.yorku.ca/',
-        name: 'pybpp'
-      });
-      
-      if (altCookie) {
-        console.log('✅ Found pybpp cookie, user might be logged in');
-        console.log('Cookie details:', altCookie);
-        return true;
-      }
-    } catch (error) {
-      console.log('Alternative cookie check failed:', error);
-    }
-
-    console.log('❌ FAILURE: No session cookie found in any tested domain.');
-    return false;
-
+    const cookie = await chrome.cookies.get({ url: `https://${TARGET_DOMAIN_FOR_COOKIES}/`, name: SESSION_COOKIE_NAME });
+    return !!cookie;
   } catch (error) {
-    console.error('💥 ERROR in cookie check:', error);
+    console.error('Error checking for cookies:', error);
     return false;
   }
 }
 
-// Listen for content script requests
-chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (request.action === "checkLoginStatus") {
-    isUserLoggedIn().then(isLoggedIn => {
-      sendResponse({ status: isLoggedIn });
-    });
-    return true; // Will respond asynchronously
+// --- Listener for tab URL changes to capture the token ---
+// This listener runs every time a tab's URL changes or completes loading.
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  // We only care about URLs that are fully loaded and are from the YorkU course system, and contain a 'token=' parameter.
+  if (changeInfo.status === 'complete' && changeInfo.url && 
+      changeInfo.url.includes('w2prod.sis.yorku.ca') && changeInfo.url.includes('token=')) {
+    console.log(`Background: Detected URL change with token: ${changeInfo.url}`);
+    const urlObject = new URL(changeInfo.url);
+    const token = urlObject.searchParams.get('token');
+    if (token) {
+      lastCapturedToken = token;
+      console.log('Background: Captured new token:', lastCapturedToken.substring(0, 20) + '...');
+    }
   }
 });
 
-// Additional helper function to debug all yorku.ca cookies
-async function debugAllCookies() {
-  try {
-    const allCookies = await chrome.cookies.getAll({ domain: '.yorku.ca' });
-    console.log('All .yorku.ca cookies:', allCookies);
-    
-    const passportCookies = await chrome.cookies.getAll({ domain: '.passportyork.yorku.ca' });
-    console.log('All .passportyork.yorku.ca cookies:', passportCookies);
-  } catch (error) {
-    console.error('Debug cookies error:', error);
+// --- Listener for messages from content scripts ---
+chrome.runtime.onMessage.addListener(
+  function(request, sender, sendResponse) {
+    if (request.action === "checkLoginStatus") {
+      isUserLoggedIn().then(isLoggedIn => {
+        sendResponse({ status: isLoggedIn });
+      });
+      return true; // Indicates an asynchronous response
+    } else if (request.action === "getCapturedToken") {
+      sendResponse({ token: lastCapturedToken });
+      return true; // Indicates an asynchronous response
+    } else if (request.action === "navigateTab") {
+        // Content script asks background to navigate the current tab
+        const tabId = sender.tab.id; 
+        const urlToNavigate = request.url;
+        console.log(`Background: Received request to navigate tab ${tabId} to: ${urlToNavigate}`);
+        chrome.tabs.update(tabId, { url: urlToNavigate }, () => {
+          if (chrome.runtime.lastError) {
+              console.error("Navigation error:", chrome.runtime.lastError.message);
+              sendResponse({ success: false, error: chrome.runtime.lastError.message });
+          } else {
+              sendResponse({ success: true });
+          }
+        });
+        return true; // Indicates an asynchronous response
+    } else if (request.action === "fetchHtml") { // Background performs the fetch to avoid CORS issues
+      const urlToFetch = request.url;
+      console.log(`Background: Received request to fetch URL: ${urlToFetch}`);
+      fetch(urlToFetch)
+        .then(response => {
+          if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+          }
+          return response.text();
+        })
+        .then(html => {
+          sendResponse({ success: true, html: html });
+        })
+        .catch(error => {
+          console.error(`Background: Failed to fetch ${urlToFetch}:`, error);
+          sendResponse({ success: false, error: error.message });
+        });
+      return true; // Indicates an asynchronous response
+    }
   }
-}
+);

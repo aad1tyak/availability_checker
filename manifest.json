@@ -5,7 +5,8 @@
   "description": "Checks for course availability on YorkU's registration site.",
   "permissions": [
     "cookies",
-    "activeTab"
+    "activeTab",
+    "tabs"
   ],
   "host_permissions": [
     "*://*.yorku.ca/*",
