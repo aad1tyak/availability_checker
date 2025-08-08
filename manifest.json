@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "YorkU Course Availability Checker",
+  "version": "1.0",
+  "description": "Checks for course availability on YorkU's registration site.",
+  "content_scripts": [
+    {
+      "matches": [
+        "https://w2prod.sis.yorku.ca/*"
+      ],
+      "js": [
+        "content.js"
+      ]
+    }
+  ]
+}
