@@ -1,7 +1,8 @@
 // background.js
 
 const SESSION_COOKIE_NAME = 'ppyauth';
-const TARGET_DOMAIN = 'https://w2prod.sis.yorku.ca/';
+// Corrected to a URL on the broader .yorku.ca domain.
+const TARGET_DOMAIN = 'https://www.yorku.ca/';
 
 // Function to check for the session cookie
 async function isUserLoggedIn() {
@@ -21,8 +22,6 @@ chrome.runtime.onMessage.addListener(
       isUserLoggedIn().then(isLoggedIn => {
         sendResponse({ status: isLoggedIn });
       });
-      // This is the crucial line:
-      // It tells the browser that you will send a response asynchronously.
       return true;
     }
   }
