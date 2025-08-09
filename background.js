@@ -9,27 +9,46 @@ const LOGINPPY_PATH = '/Apps/WebObjects/cdm.woa/wa/loginppy';
 let lastCapturedToken = null; // Stores the most recently found URL token
 let tokenGenerationInProgress = false; // Prevent multiple simultaneous token requests
 
-// --- Cookie-based Login Check ---
+// --- Cookie-based Login Check (Your working version) ---
 async function isUserLoggedIn() {
   try {
+    console.log('--- DEBUGGING COOKIES (from isUserLoggedIn) ---');
+    console.log(`Attempting to get specific cookie '${SESSION_COOKIE_NAME}' from URL: ${PRIMARY_YORKU_URL}`);
+    
+    // First, try to get the specific session cookie using a valid URL
     const specificCookie = await chrome.cookies.get({
-      url: PRIMARY_YORKU_URL,
+      url: PRIMARY_YORKU_URL, // Use a concrete URL here
       name: SESSION_COOKIE_NAME
     });
 
     if (specificCookie) {
-      console.log(`✅ SUCCESS: Found targeted session cookie '${SESSION_COOKIE_NAME}'.`);
+      console.log(`✅ SUCCESS: Found targeted session cookie '${SESSION_COOKIE_NAME}' directly.`);
+      console.log('Specific cookie details:', specificCookie);
       return true;
     } else {
-      console.log(`❌ FAILURE: Targeted session cookie '${SESSION_COOKIE_NAME}' not found directly.`);
-      // Fallback: full scan (useful for debugging, less performant for live check)
+      console.log(`🟡 Targeted session cookie '${SESSION_COOKIE_NAME}' NOT found directly. Performing exhaustive search.`);
+      
+      // If not found directly, perform an exhaustive search for all cookies
       const allCookies = await chrome.cookies.getAll({ domain: YORKU_BASE_DOMAIN }); 
-      const foundInAll = allCookies.some(cookie => cookie.name === SESSION_COOKIE_NAME);
+      
+      console.log(`Found ${allCookies.length} cookies for domain '${YORKU_BASE_DOMAIN}':`);
+      let foundInAll = false;
+      allCookies.forEach((cookie, index) => {
+        console.log(`  [${index + 1}] Name: ${cookie.name}, Value: ${cookie.value.substring(0, Math.min(cookie.value.length, 30))}...`);
+        console.log(`     Domain: ${cookie.domain}, Path: ${cookie.path}, Secure: ${cookie.secure}, HttpOnly: ${cookie.httpOnly}`);
+        if (cookie.name === SESSION_COOKIE_NAME) {
+          console.log(`  <-- THIS IS OUR TARGETED COOKIE!`);
+          foundInAll = true;
+        }
+      });
+
       if (foundInAll) {
-          console.log(`✅ SUCCESS: Found targeted session cookie '${SESSION_COOKIE_NAME}' in exhaustive scan.`);
-          return true;
+        console.log(`✅ SUCCESS: Found targeted session cookie '${SESSION_COOKIE_NAME}' in exhaustive search.`);
+        return true;
+      } else {
+        console.log(`❌ FAILURE: Targeted session cookie '${SESSION_COOKIE_NAME}' not found anywhere in exhaustive search.`);
+        return false;
       }
-      return false;
     }
   } catch (error) {
     console.error('💥 ERROR in isUserLoggedIn cookie check:', error);
@@ -53,21 +72,17 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
   }
 });
 
-// --- Function to generate token by navigating through loginppy ---
-async function generateTokenForUrl(targetUrl) {
+// --- Function to generate token and fetch HTML directly ---
+async function generateTokenAndFetchHtml(targetUrl) {
   if (tokenGenerationInProgress) {
     console.log('Token generation already in progress, waiting...');
-    // Wait for ongoing generation
-    let attempts = 0;
-    while (tokenGenerationInProgress && attempts < 30) { // Wait up to 30 seconds
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      attempts++;
-    }
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    return null;
   }
 
   try {
     tokenGenerationInProgress = true;
-    console.log(`Starting token generation for: ${targetUrl}`);
+    console.log(`Starting token generation and HTML fetch for: ${targetUrl}`);
 
     // Extract the path from the target URL for the loginppy redirect
     const urlObj = new URL(targetUrl);
@@ -79,88 +94,136 @@ async function generateTokenForUrl(targetUrl) {
     
     const tab = await chrome.tabs.create({ url: loginppyUrl, active: false });
     
-    // Wait for token to be captured
-    let attempts = 0;
-    while (!lastCapturedToken && attempts < 20) { // Wait up to 20 seconds
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      attempts++;
-      console.log(`Waiting for token... attempt ${attempts}`);
+    // Wait for the tab to finish loading (should redirect to tokenized URL)
+    await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds for redirect
+    
+    // Get the current URL of the tab (should now have token)
+    const updatedTab = await chrome.tabs.get(tab.id);
+    const finalUrl = updatedTab.url;
+    
+    console.log(`Final URL after redirect: ${finalUrl}`);
+    
+    // Check if the final URL has a token
+    if (finalUrl && finalUrl.includes('token=')) {
+      const urlObject = new URL(finalUrl);
+      const token = urlObject.searchParams.get('token');
+      if (token) {
+        lastCapturedToken = token; // Store for future use
+        console.log('✅ Token captured from redirected URL:', token.substring(0, 20) + '...');
+        
+        // Now fetch HTML directly from this tokenized URL
+        console.log('Fetching HTML from tokenized URL...');
+        const response = await fetch(finalUrl);
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        
+        const html = await response.text();
+        console.log('✅ Successfully fetched HTML, length:', html.length);
+        
+        // Close the tab
+        try {
+          await chrome.tabs.remove(tab.id);
+        } catch (error) {
+          console.log('Could not close token generation tab:', error);
+        }
+        
+        tokenGenerationInProgress = false;
+        return { html: html, token: token };
+      }
     }
-
-    // Close the tab used for token generation
+    
+    // If we get here, something went wrong
     try {
       await chrome.tabs.remove(tab.id);
     } catch (error) {
-      console.log('Could not close token generation tab:', error);
+      console.log('Could not close failed token generation tab:', error);
     }
-
-    tokenGenerationInProgress = false;
     
-    if (lastCapturedToken) {
-      console.log('Token generation successful!');
-      return lastCapturedToken;
-    } else {
-      throw new Error('Token generation timed out');
-    }
+    tokenGenerationInProgress = false;
+    throw new Error('Failed to capture token from redirected URL');
     
   } catch (error) {
     tokenGenerationInProgress = false;
-    console.error('Token generation failed:', error);
+    console.error('Token generation and fetch failed:', error);
     throw error;
   }
 }
 
-// --- Function to parse availability from HTML ---
+// --- Function to parse availability from HTML using regex (no DOMParser needed) ---
 function getAvailabilityStatusForSection(htmlContent, targetSectionLetter) {
     console.log(`Parsing HTML for section ${targetSectionLetter}`);
     console.log('HTML Content length:', htmlContent.length);
     console.log('First 500 chars of HTML:', htmlContent.substring(0, 500));
     
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(htmlContent, 'text/html');
-
-    const sectionHeaders = doc.querySelectorAll('TD[bgcolor="#CC0000"]');
-    console.log(`Found ${sectionHeaders.length} section headers`);
-
     let courseStatus = {
         sectionLetter: targetSectionLetter,
         status: 'Full or Not Found', 
         fullText: 'No matching section found'
     };
 
-    for (const headerTd of sectionHeaders) {
-        const headerText = headerTd.textContent.trim();
-        console.log(`Checking header: ${headerText}`);
+    try {
+        // Look for section headers with regex
+        const sectionHeaderRegex = /<TD[^>]*bgcolor="#CC0000"[^>]*>([^<]*Section\s+([A-Z])[^<]*)<\/TD>/gi;
+        let match;
+        let sectionFound = false;
         
-        const sectionMatch = headerText.match(/Section\s+([A-Z])/);
-        const currentSectionLetter = sectionMatch ? sectionMatch[1] : null;
-
-        if (currentSectionLetter === targetSectionLetter) {
-            console.log(`Found matching section: ${currentSectionLetter}`);
-            let currentTr = headerTd.closest('TR'); 
-            if (currentTr && currentTr.nextElementSibling) {
-                let detailTr = currentTr.nextElementSibling;
-                const innerAvailabilityTable = detailTr.querySelector('TABLE[cellpadding="0"][cellspacing="0"][border="0"]');
-                if (innerAvailabilityTable) {
-                    const actualSeatsTd = innerAvailabilityTable.querySelector('tr > td:nth-child(2)');
-                    if (actualSeatsTd) {
-                        const availabilityText = actualSeatsTd.textContent.trim();
-                        console.log(`Found availability text: "${availabilityText}"`);
-                        courseStatus.fullText = availabilityText;
-
-                        if (availabilityText === 'Seats Available:') {
-                            courseStatus.status = 'Available';
-                        } else if (availabilityText.includes('Remaining seats may be restricted')) {
-                            courseStatus.status = 'Restricted';
-                        } else {
-                            courseStatus.status = 'Full';
-                        }
+        while ((match = sectionHeaderRegex.exec(htmlContent)) !== null) {
+            const headerText = match[1];
+            const sectionLetter = match[2];
+            
+            console.log(`Found section header: "${headerText.trim()}" - Section: ${sectionLetter}`);
+            
+            if (sectionLetter === targetSectionLetter) {
+                console.log(`✅ Found matching section: ${sectionLetter}`);
+                sectionFound = true;
+                
+                // Find the HTML content after this section header
+                const afterHeaderIndex = sectionHeaderRegex.lastIndex;
+                const htmlAfterHeader = htmlContent.substring(afterHeaderIndex, afterHeaderIndex + 2000); // Look at next 2000 chars
+                
+                // Look for availability indicators in the following content
+                if (htmlAfterHeader.includes('Seats Available:')) {
+                    if (htmlAfterHeader.includes('Remaining seats may be restricted')) {
+                        courseStatus.status = 'Restricted';
+                        courseStatus.fullText = 'Seats Available: Remaining seats may be restricted.';
+                    } else {
+                        courseStatus.status = 'Available';
+                        courseStatus.fullText = 'Seats Available:';
+                    }
+                } else if (htmlAfterHeader.includes('Full') || htmlAfterHeader.includes('Closed')) {
+                    courseStatus.status = 'Full';
+                    courseStatus.fullText = 'Course section is full or closed';
+                } else {
+                    // Try to extract any text that might indicate status
+                    const statusMatch = htmlAfterHeader.match(/(?:Seats?|Enrollment|Status)[^<]*?([^<]{10,50})/i);
+                    if (statusMatch) {
+                        courseStatus.fullText = statusMatch[1].trim();
                     }
                 }
+                break;
             }
-            break; 
         }
+        
+        if (!sectionFound) {
+            console.log(`❌ Section ${targetSectionLetter} not found in HTML`);
+            // Try to find any sections that do exist
+            const allSectionsRegex = /Section\s+([A-Z])/g;
+            const foundSections = [];
+            let sectionMatch;
+            while ((sectionMatch = allSectionsRegex.exec(htmlContent)) !== null) {
+                foundSections.push(sectionMatch[1]);
+            }
+            console.log(`Available sections found: [${foundSections.join(', ')}]`);
+            courseStatus.fullText = `Section ${targetSectionLetter} not found. Available sections: ${foundSections.join(', ')}`;
+        }
+        
+    } catch (error) {
+        console.error('Error parsing HTML:', error);
+        courseStatus.fullText = 'Error parsing course information';
     }
+    
     console.log('Final course status:', courseStatus);
     return courseStatus;
 }
@@ -179,6 +242,21 @@ chrome.runtime.onMessage.addListener(
     else if (request.action === "getCapturedToken") {
       sendResponse({ token: lastCapturedToken });
       return true; 
+    } 
+    
+    else if (request.action === "navigateTab") {
+        const tabId = sender.tab.id; 
+        const urlToNavigate = request.url;
+        console.log(`Background: Received request to navigate tab ${tabId} to: ${urlToNavigate}`);
+        chrome.tabs.update(tabId, { url: urlToNavigate }, () => {
+          if (chrome.runtime.lastError) {
+              console.error("Navigation error:", chrome.runtime.lastError.message);
+              sendResponse({ success: false, error: chrome.runtime.lastError.message });
+          } else {
+              sendResponse({ success: true });
+          }
+        });
+        return true;
     } 
     
     else if (request.action === "fetchHtml") { 
@@ -216,53 +294,79 @@ chrome.runtime.onMessage.addListener(
 
             let token = lastCapturedToken;
             
-            // If no token, try to generate one
+            // If no token, generate one AND fetch HTML directly
             if (!token) {
-                console.log('No token available, attempting to generate one...');
+                console.log('No token available, generating token and fetching HTML directly...');
                 try {
-                    token = await generateTokenForUrl(courseUrl);
+                    const result = await generateTokenAndFetchHtml(courseUrl);
+                    if (result && result.html) {
+                        console.log('✅ Successfully generated token and fetched HTML directly!');
+                        
+                        // Log the full HTML for debugging
+                        console.log('='.repeat(80));
+                        console.log(`FULL HTML CONTENT FOR ${courseUrl}:`);
+                        console.log('='.repeat(80));
+                        console.log(result.html);
+                        console.log('='.repeat(80));
+                        
+                        // For now, just return success without parsing sections
+                        return { success: true, status: { status: 'HTML Fetched Successfully', sectionLetter: sectionLetter, fullText: 'Check console for HTML content' }, html: result.html };
+                    } else {
+                        throw new Error('Token generation returned no HTML');
+                    }
                 } catch (error) {
-                    console.error('Token generation failed:', error);
-                    return { success: false, error: `Token generation failed: ${error.message}. Please visit a YorkU course page first to capture a token.`, status: { status: "Token Generation Failed" } };
+                    console.error('Token generation and fetch failed:', error);
+                    return { success: false, error: `Token generation failed: ${error.message}. Try manually visiting a YorkU course page first.`, status: { status: "Token Generation Failed" } };
                 }
             }
 
-            // Construct the tokenized URL
+            // If we already have a token, use it directly
+            console.log('Using existing token for fetch...');
             const urlObject = new URL(courseUrl);
             urlObject.searchParams.set('token', token);
             const tokenizedCourseUrl = urlObject.toString();
             console.log(`Fetching tokenized course URL: ${tokenizedCourseUrl}`);
 
-            // Fetch the HTML
             try {
                 const response = await fetch(tokenizedCourseUrl);
                 if (!response.ok) {
-                    // If token is invalid, try generating a new one
+                    // If token is invalid, generate new token and fetch directly
                     if (response.status === 403 || response.status === 401) {
-                        console.log('Token might be expired, trying to generate new token...');
+                        console.log('Token expired, generating new token and fetching HTML directly...');
                         lastCapturedToken = null; // Clear old token
-                        token = await generateTokenForUrl(courseUrl);
-                        
-                        // Try again with new token
-                        urlObject.searchParams.set('token', token);
-                        const newTokenizedUrl = urlObject.toString();
-                        const retryResponse = await fetch(newTokenizedUrl);
-                        if (!retryResponse.ok) {
-                            throw new Error(`HTTP error after token refresh! status: ${retryResponse.status}`);
+                        const result = await generateTokenAndFetchHtml(courseUrl);
+                        if (result && result.html) {
+                            console.log('✅ Token refresh and fetch successful!');
+                            
+                            // Log the full HTML for debugging
+                            console.log('='.repeat(80));
+                            console.log(`FULL HTML CONTENT FOR ${courseUrl}:`);
+                            console.log('='.repeat(80));
+                            console.log(result.html);
+                            console.log('='.repeat(80));
+                            
+                            // For now, just return success without parsing sections
+                            return { success: true, status: { status: 'HTML Fetched Successfully', sectionLetter: sectionLetter, fullText: 'Check console for HTML content' }, html: result.html };
+                        } else {
+                            throw new Error('Token refresh returned no HTML');
                         }
-                        const html = await retryResponse.text();
-                        const availability = getAvailabilityStatusForSection(html, sectionLetter);
-                        return { success: true, status: availability, html: html };
                     } else {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
                 }
                 
                 const html = await response.text();
-                console.log('Successfully fetched HTML, length:', html.length);
+                console.log('Successfully fetched HTML with existing token, length:', html.length);
                 
-                const availability = getAvailabilityStatusForSection(html, sectionLetter);
-                return { success: true, status: availability, html: html };
+                // Log the full HTML for debugging
+                console.log('='.repeat(80));
+                console.log(`FULL HTML CONTENT FOR ${courseUrl}:`);
+                console.log('='.repeat(80));
+                console.log(html);
+                console.log('='.repeat(80));
+                
+                // For now, just return success without parsing sections
+                return { success: true, status: { status: 'HTML Fetched Successfully', sectionLetter: sectionLetter, fullText: 'Check console for HTML content' }, html: html };
                 
             } catch (error) {
                 console.error('Fetch error:', error);
@@ -272,6 +376,9 @@ chrome.runtime.onMessage.addListener(
         
         performAvailabilityCheck().then(response => {
             sendResponse(response);
+        }).catch(error => {
+            console.error('Unexpected error in performAvailabilityCheck:', error);
+            sendResponse({ success: false, error: error.message, status: { status: "Unexpected Error" } });
         });
         return true;
     }
